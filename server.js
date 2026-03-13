@@ -19,7 +19,8 @@ io.on('connection', s => {
 });
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const evo = axios.create({
   baseURL: EVOLUTION_URL,
@@ -30,7 +31,7 @@ const evo = axios.create({
 app.get('/', (req, res) => res.json({
   status: '🟢 WA CRM Server rodando!',
   instancia: INSTANCE_NAME,
-  clientes_conectados: io.engine.clientsCount,
+  clientes: io.engine.clientsCount,
   ts: new Date().toISOString()
 }));
 
@@ -45,9 +46,9 @@ app.post('/mensagens', async (req, res) => {
 });
 
 app.post('/enviar', async (req, res) => {
-  const { numero, texto } = req.body;
-  if (!numero || !texto) return res.status(400).json({ erro: 'numero e texto obrigatorios' });
   try {
+    const { numero, texto } = req.body;
+    if (!numero || !texto) return res.status(400).json({ erro: 'numero e texto obrigatorios' });
     const r = await evo.post(`/message/sendText/${INSTANCE_NAME}`, {
       number: numero.replace(/\D/g,''), text: texto
     });
@@ -60,120 +61,114 @@ app.get('/status', async (req, res) => {
   catch(e) { res.status(500).json({ erro: e.message }); }
 });
 
-// ── EXTRAIR TEXTO da mensagem ─────────────────
-function extrairTexto(message) {
-  if (!message) return '';
-  return message.conversation
-    || message.extendedTextMessage?.text
-    || message.imageMessage?.caption
-    || (message.imageMessage    ? '📷 Imagem'    : '')
-    || (message.audioMessage    ? '🎵 Áudio'     : '')
-    || (message.videoMessage    ? '🎬 Vídeo'     : '')
-    || (message.documentMessage ? '📄 Documento' : '')
-    || (message.stickerMessage  ? '🖼️ Sticker'  : '')
-    || (message.reactionMessage ? '👍 Reação'    : '')
-    || (message.contactMessage  ? '👤 Contato'   : '')
-    || (message.locationMessage ? '📍 Localização': '')
-    || (message.listResponseMessage ? '📋 Lista' : '')
-    || (message.buttonsResponseMessage ? '🔘 Botão' : '')
+function extrairTexto(msg) {
+  if (!msg) return '';
+  return msg.conversation
+    || msg.extendedTextMessage?.text
+    || msg.imageMessage?.caption
+    || (msg.imageMessage    ? '📷 Imagem'    : '')
+    || (msg.audioMessage    ? '🎵 Áudio'     : '')
+    || (msg.videoMessage    ? '🎬 Vídeo'     : '')
+    || (msg.documentMessage ? '📄 Documento' : '')
+    || (msg.stickerMessage  ? '🖼️ Sticker'  : '')
+    || (msg.reactionMessage ? '👍 Reação'    : '')
     || '';
 }
 
-// ── PROCESSAR uma mensagem ───────────────────
-function processarMensagem(m) {
-  if (!m) return null;
-
-  const jid = m.key?.remoteJid || m.remoteJid || '';
-  // Ignora grupos e broadcasts
-  if (!jid.endsWith('@s.whatsapp.net')) return null;
-
-  const txt = extrairTexto(m.message || m);
-  if (!txt) return null;
-
-  const numero = jid.replace('@s.whatsapp.net', '');
-  const ts     = m.messageTimestamp || m.timestamp || Math.floor(Date.now()/1000);
-  const d      = new Date(ts * 1000);
-
-  return {
-    id:        m.key?.id || m.id || ('m' + Date.now()),
-    numero,
-    waId:      jid,
-    texto:     txt,
-    de:        m.key?.fromMe ? 'out' : 'in',
-    nome:      m.pushName || m.verifiedName || m.notifyName || numero,
-    horario:   d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-    timestamp: ts
-  };
+function processarMsg(m) {
+  try {
+    if (!m) return null;
+    const jid = m.key?.remoteJid || m.remoteJid || '';
+    if (!jid.endsWith('@s.whatsapp.net')) return null;
+    const txt = extrairTexto(m.message || m);
+    if (!txt) return null;
+    const numero = jid.replace('@s.whatsapp.net','');
+    const ts = m.messageTimestamp || m.timestamp || Math.floor(Date.now()/1000);
+    const d  = new Date(ts * 1000);
+    return {
+      id:        m.key?.id || ('m'+Date.now()+Math.random()),
+      numero,    waId: jid, texto: txt,
+      de:        m.key?.fromMe ? 'out' : 'in',
+      nome:      m.pushName || m.verifiedName || m.notifyName || numero,
+      horario:   d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),
+      timestamp: ts
+    };
+  } catch(e) { console.error('Erro processarMsg:', e.message); return null; }
 }
 
 // ── WEBHOOK ───────────────────────────────────
 app.post('/webhook', (req, res) => {
-  const ev   = req.body;
-  const tipo = (ev?.event || ev?.type || '').toLowerCase();
+  // Responde IMEDIATAMENTE para não dar timeout
+  res.json({ recebido: true });
 
-  // Log completo para debug
-  console.log('\n══════════════════════════════');
-  console.log('📨 WEBHOOK RECEBIDO:', tipo);
-  console.log('BODY:', JSON.stringify(ev).slice(0, 500));
-  console.log('══════════════════════════════\n');
+  try {
+    const ev   = req.body;
+    const tipo = String(ev?.event || ev?.type || '').toLowerCase();
+    console.log('\n--- WEBHOOK:', tipo, '---');
+    console.log(JSON.stringify(ev).slice(0, 800));
 
-  // Trata TODOS os eventos que podem conter mensagens
-  if (tipo.includes('message')) {
-    const data = ev?.data || ev?.message || ev;
+    if (!tipo.includes('message')) return;
 
-    // Formato 1: { data: { messages: [...] } }
-    // Formato 2: { data: { key: ..., message: ... } } — mensagem única
-    // Formato 3: { data: [...] } — array direto
-    // Formato 4: a mensagem está direto em data
+    // Coleta todos os candidatos a mensagem
+    const data = ev?.data;
+    let lista  = [];
 
-    let lista = [];
+    if (Array.isArray(data?.messages))   lista = data.messages;
+    else if (Array.isArray(data))        lista = data;
+    else if (data?.key)                  lista = [data];
+    else if (Array.isArray(ev?.messages))lista = ev.messages;
+    else if (ev?.key)                    lista = [ev];
 
-    if (Array.isArray(data?.messages))      lista = data.messages;
-    else if (Array.isArray(data))            lista = data;
-    else if (data?.key && data?.message)     lista = [data];
-    else if (data?.key)                      lista = [data];
-    else if (Array.isArray(ev?.messages))    lista = ev.messages;
-    else lista = [ev]; // último recurso
+    console.log(`Candidatos: ${lista.length}`);
 
     lista.forEach(m => {
-      const payload = processarMensagem(m);
-      if (!payload) return;
-
-      const dir = payload.de === 'in' ? '⬇️  RECEBIDA' : '⬆️  ENVIADA';
-      console.log(`${dir} | ${payload.nome} | ${payload.texto}`);
-      io.emit('nova_mensagem', payload);
-      console.log(`📡 Emitido para ${io.engine.clientsCount} cliente(s)`);
+      const p = processarMsg(m);
+      if (!p) return;
+      console.log(`${p.de==='in'?'⬇️ RECEBIDA':'⬆️ ENVIADA'}: ${p.nome} → "${p.texto}"`);
+      io.emit('nova_mensagem', p);
+      console.log(`Emitido para ${io.engine.clientsCount} cliente(s)`);
     });
-  }
 
-  if (tipo.includes('connection')) {
-    const estado = ev?.data?.state || ev?.data?.connection || ev?.state;
-    console.log('🔌 Conexão:', estado);
-    io.emit('status_conexao', { estado, conectado: estado === 'open' });
+  } catch(e) {
+    console.error('Erro no webhook:', e.message, e.stack);
   }
-
-  res.json({ recebido: true });
 });
 
 // ── CONFIGURAR WEBHOOK ───────────────────────
 app.post('/configurar-webhook', async (req, res) => {
-  const url = req.body?.url || `${req.protocol}://${req.get('host')}/webhook`;
   try {
+    const url = req.body?.url || `${req.protocol}://${req.get('host')}/webhook`;
     const r = await evo.post(`/webhook/set/${INSTANCE_NAME}`, {
       url,
       webhook_by_events: false,
       webhook_base64:    false,
-      events: ['MESSAGES_UPSERT','MESSAGES_UPDATE','CONNECTION_UPDATE','QRCODE_UPDATED','SEND_MESSAGE']
+      events: ['MESSAGES_UPSERT','MESSAGES_UPDATE','CONNECTION_UPDATE','SEND_MESSAGE']
     });
     console.log('✅ Webhook configurado:', url);
     res.json({ sucesso: true, url, dados: r.data });
   } catch(e) {
+    console.error('Erro configurar webhook:', e.message);
     res.status(500).json({ sucesso: false, erro: e.message });
   }
 });
 
 server.listen(PORT, () => {
-  console.log(`\n🟢 WA CRM Server na porta ${PORT}`);
+  console.log(`\n🟢 WA CRM Server | Porta ${PORT}`);
   console.log(`📡 Evolution: ${EVOLUTION_URL}`);
   console.log(`📱 Instância: ${INSTANCE_NAME}\n`);
+  // Auto-configura webhook ao iniciar
+  setTimeout(async () => {
+    try {
+      const host = `https://wacrm-server-production.up.railway.app`;
+      await evo.post(`/webhook/set/${INSTANCE_NAME}`, {
+        url: `${host}/webhook`,
+        webhook_by_events: false,
+        webhook_base64: false,
+        events: ['MESSAGES_UPSERT','MESSAGES_UPDATE','CONNECTION_UPDATE','SEND_MESSAGE']
+      });
+      console.log('✅ Webhook auto-configurado para:', `${host}/webhook`);
+    } catch(e) {
+      console.log('⚠️ Auto-config webhook falhou:', e.message);
+    }
+  }, 3000);
 });
