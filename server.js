@@ -149,7 +149,6 @@ app.post('/db/mensagens', async (req, res) => {
   try {
     const { convId, messages } = req.body;
     if (!messages?.length) return res.json({ ok: true });
-    // Garante que a conversa existe
     await pool.query('INSERT INTO conversations(id) VALUES($1) ON CONFLICT DO NOTHING', [convId]);
     for (const m of messages) {
       await pool.query(`
@@ -208,7 +207,7 @@ app.post('/enviar', async (req, res) => {
   } catch (e) { res.status(500).json({ sucesso: false, erro: e.message }); }
 });
 
-// ── WEBHOOK ───────────────────────────────────
+// ── WEBHOOK RECEIVER ──────────────────────────
 function extrairTexto(msg) {
   if (!msg) return '';
   return msg.conversation || msg.extendedTextMessage?.text
@@ -266,13 +265,13 @@ app.post('/webhook', (req, res) => {
   } catch (e) { console.error('Erro webhook:', e.message); }
 });
 
-// ── CONFIGURAR WEBHOOK MANUALMENTE ────────────
+// ── CONFIGURAR WEBHOOK ────────────────────────
 app.post('/configurar-webhook', async (req, res) => {
   try {
     const publicDomain = process.env.RAILWAY_PUBLIC_DOMAIN || 'wacrm-server-production.up.railway.app';
     const url = req.body?.url || `https://${publicDomain}/webhook`;
 
-    const response = await evo.post('/webhook/instance', {
+    const response = await evo.post(`/webhook/set/${INSTANCE_NAME}`, {
       enabled: true,
       url: url,
       webhook_by_events: false,
@@ -280,10 +279,10 @@ app.post('/configurar-webhook', async (req, res) => {
       events: ['MESSAGES_UPSERT', 'MESSAGES_UPDATE', 'CONNECTION_UPDATE', 'SEND_MESSAGE']
     });
 
-    console.log('✅ Webhook configurado:', url);
+    console.log('✅ Webhook configurado com sucesso:', url);
     res.json({ sucesso: true, url, response: response.data });
   } catch (e) {
-    const errorDetail = e.response?.data || e.message;
+    const errorDetail = e.response?.data || e.message || 'Erro desconhecido';
     console.error('❌ Erro ao configurar webhook:', errorDetail);
     res.status(500).json({ sucesso: false, erro: errorDetail });
   }
@@ -293,5 +292,5 @@ app.post('/configurar-webhook', async (req, res) => {
 server.listen(PORT, async () => {
   console.log(`\n🟢 WA CRM Server | Porta ${PORT}`);
   await initDB();
-  console.log('Auto-config de webhook desativado — configure manualmente via POST /configurar-webhook ou dashboard da Evolution API');
+  console.log('Auto-config de webhook desativado — configure manualmente via POST /configurar-webhook ou diretamente na Evolution API');
 });
