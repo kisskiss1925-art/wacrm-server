@@ -412,11 +412,24 @@ function handleWebhook(req, res) {
 
   try {
     const ev   = req.body;
-    const tipo = String(ev?.event || ev?.type || '').toLowerCase();
+    // Pega evento do body OU do path (/webhook/messages-upsert → messages-upsert)
+    const pathEvento = (req.params?.evento || '').toLowerCase().replace('-','.');
+    const tipo = String(ev?.event || ev?.type || pathEvento || '').toLowerCase();
 
-    console.log(`\n📨 Webhook: ${tipo}`);
+    console.log(`\n📨 Webhook: ${tipo || '(sem tipo)'} | path: ${req.path}`);
+    console.log('Body keys:', Object.keys(ev||{}).join(', '));
 
-    if (!tipo.includes('message')) return;
+    // Processa mensagens se tipo indica mensagem OU se tem dados com key (mensagem sem tipo)
+    const temMensagem = tipo.includes('message') || pathEvento.includes('message') || ev?.data?.key || ev?.key;
+    if (!temMensagem) {
+      // Verifica status de conexão
+      if (tipo.includes('connection') || pathEvento.includes('connection')) {
+        const estado = ev?.data?.state || ev?.data?.connection || ev?.state;
+        console.log('🔌 Conexão:', estado);
+        io.emit('status_conexao', { estado, conectado: estado === 'open' });
+      }
+      return;
+    }
 
     const data = ev?.data;
     let lista  = [];
@@ -474,11 +487,13 @@ function handleWebhook(req, res) {
       } catch(e) { console.error('Erro processar msg:', e.message); }
     });
 
-    // Status de conexão
-    if (tipo.includes('connection')) {
-      const estado = ev?.data?.state || ev?.data?.connection;
-      console.log('🔌 Conexão:', estado);
-      io.emit('status_conexao', { estado, conectado: estado === 'open' });
+    // Status de conexão (também verificado se não tem mensagem)
+    if (tipo.includes('connection') || pathEvento.includes('connection')) {
+      const estado = ev?.data?.state || ev?.data?.connection || ev?.state;
+      if (estado) {
+        console.log('🔌 Conexão:', estado);
+        io.emit('status_conexao', { estado, conectado: estado === 'open' });
+      }
     }
 
   } catch(e) {
