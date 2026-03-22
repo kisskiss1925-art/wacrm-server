@@ -18,7 +18,7 @@ const INSTANCE      = process.env.INSTANCE_NAME || 'meu-whatsapp';
 const DATABASE_URL  = process.env.DATABASE_URL || 'postgresql://postgres:geecigwMqHiBGTussElRisotnzGauebb@ballast.proxy.rlwy.net:44165/railway';
 const MY_URL        = process.env.RAILWAY_PUBLIC_DOMAIN
   ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-  : process.env.MY_URL || '';
+  : process.env.MY_URL || 'https://wacrm-server-production-c61b.up.railway.app';
 
 // ══════════════════════════════════════════════
 // POSTGRES
