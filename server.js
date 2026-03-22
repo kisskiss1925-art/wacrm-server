@@ -402,7 +402,11 @@ async function salvarMensagem(payload) {
   }
 }
 
-app.post('/webhook', (req, res) => {
+// Aceita /webhook e /webhook/nome-do-evento (Webhook por Eventos ativado)
+app.post('/webhook', handleWebhook);
+app.post('/webhook/:evento', handleWebhook);
+
+function handleWebhook(req, res) {
   // Responde imediatamente
   res.json({ recebido: true });
 
@@ -480,7 +484,7 @@ app.post('/webhook', (req, res) => {
   } catch(e) {
     console.error('Erro webhook:', e.message);
   }
-});
+}
 
 // ══════════════════════════════════════════════
 // CONFIGURAR WEBHOOK na Evolution API
