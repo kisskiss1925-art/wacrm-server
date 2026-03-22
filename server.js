@@ -81,6 +81,7 @@ async function initDB() {
     console.log('✅ Banco de dados inicializado!');
     await seedQuickMessages();
     await initAgentes();
+    await initConfig();
   } catch(e) {
     console.error('❌ Erro ao inicializar banco:', e.message);
   }
@@ -374,6 +375,16 @@ function extrairTexto(msg) {
     || '';
 }
 
+function extrairMidia(msg) {
+  if (!msg) return null;
+  if (msg.imageMessage)    return { type:'image',    url: msg.imageMessage.url    || msg.imageMessage.directPath || null, mime: msg.imageMessage.mimetype    || 'image/jpeg' };
+  if (msg.audioMessage)    return { type:'audio',    url: msg.audioMessage.url    || msg.audioMessage.directPath || null, mime: msg.audioMessage.mimetype    || 'audio/ogg' };
+  if (msg.videoMessage)    return { type:'video',    url: msg.videoMessage.url    || msg.videoMessage.directPath || null, mime: msg.videoMessage.mimetype    || 'video/mp4' };
+  if (msg.documentMessage) return { type:'document', url: msg.documentMessage.url || msg.documentMessage.directPath || null, mime: msg.documentMessage.mimetype || 'application/octet-stream' };
+  if (msg.stickerMessage)  return { type:'sticker',  url: msg.stickerMessage.url  || null, mime: 'image/webp' };
+  return null;
+}
+
 async function salvarMensagem(payload) {
   if (!pool) return;
   try {
@@ -389,9 +400,10 @@ async function salvarMensagem(payload) {
 
     // Insert mensagem
     await pool.query(`
-      INSERT INTO messages(id,conv_id,text,from_me,msg_time,msg_date,status,timestamp)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING
-    `, [payload.id, cid, payload.texto, payload.de==='out', payload.horario, 'Hoje', 'sent', payload.timestamp]);
+      INSERT INTO messages(id,conv_id,text,from_me,msg_time,msg_date,status,media_url,media_type,timestamp)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING
+    `, [payload.id, cid, payload.texto, payload.de==='out', payload.horario, 'Hoje', 'sent',
+        payload.mediaUrl||null, payload.mediaType||null, payload.timestamp]);
 
     // Incrementa unread se recebida
     if (payload.de === 'in') {
@@ -463,6 +475,7 @@ function handleWebhook(req, res) {
         const ts     = m.messageTimestamp || Math.floor(Date.now()/1000);
         const d      = new Date(ts * 1000);
 
+        const midia  = extrairMidia(m.message || m);
         const payload = {
           id:        m.key?.id || ('m'+Date.now()+Math.random()),
           numero,
@@ -471,8 +484,25 @@ function handleWebhook(req, res) {
           de:        m.key?.fromMe ? 'out' : 'in',
           nome:      m.pushName || m.verifiedName || m.notifyName || numero,
           horario:   d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),
-          timestamp: ts
+          timestamp: ts,
+          mediaType: midia?.type  || null,
+          mediaMime: midia?.mime  || null,
         };
+
+        // Busca base64 da mídia via Evolution API
+        if (midia) {
+          try {
+            const mediaResp = await evo.post(`/chat/getBase64FromMediaMessage/${INSTANCE}`, {
+              message: { key: m.key, message: m.message }
+            });
+            if (mediaResp.data?.base64) {
+              payload.mediaBase64 = mediaResp.data.base64;
+              payload.mediaUrl    = `data:${midia.mime};base64,${mediaResp.data.base64}`;
+            }
+          } catch(e) {
+            console.log('Mídia base64 erro:', e.message);
+          }
+        }
 
         const dir = payload.de === 'in' ? '⬇️ RECEBIDA' : '⬆️ ENVIADA';
         console.log(`${dir} | ${payload.nome} (${payload.numero}) | ${payload.texto.slice(0,60)}`);
@@ -662,4 +692,43 @@ app.delete('/auth/agentes/:id', async (req, res) => {
     await pool.query('DELETE FROM agents WHERE id=$1', [req.params.id]);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+// ══════════════════════════════════════════════
+// CONFIGURAÇÕES GLOBAIS — tags, planos, chatbot
+// ══════════════════════════════════════════════
+async function initConfig() {
+  if (!pool) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS config (
+      key   TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `).catch(e=>console.error('initConfig:', e.message));
+  console.log('✅ Tabela config OK');
+}
+
+app.get('/db/config', async (req, res) => {
+  if (!pool) return res.json({});
+  try {
+    const { rows } = await pool.query('SELECT key, value FROM config');
+    const cfg = {};
+    rows.forEach(r => cfg[r.key] = r.value);
+    res.json(cfg);
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.post('/db/config', async (req, res) => {
+  if (!pool) return res.json({ ok: true });
+  try {
+    const entries = Object.entries(req.body);
+    for (const [key, value] of entries) {
+      await pool.query(`
+        INSERT INTO config(key, value, updated_at) VALUES($1,$2,NOW())
+        ON CONFLICT(key) DO UPDATE SET value=$2, updated_at=NOW()
+      `, [key, JSON.stringify(value)]);
+    }
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
 });
