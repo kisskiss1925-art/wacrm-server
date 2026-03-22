@@ -450,7 +450,7 @@ function handleWebhook(req, res) {
     else if (data?.key)                 lista = [data];
     else if (ev?.key)                   lista = [ev];
 
-    lista.forEach(m => {
+    for (const m of lista) {
       try {
         // Evolution API v2: usa @lid internamente mas remoteJidAlt tem o número real
         const jidLid  = m.key?.remoteJid  || m.remoteJid  || '';
@@ -515,7 +515,7 @@ function handleWebhook(req, res) {
         salvarMensagem(payload);
 
       } catch(e) { console.error('Erro processar msg:', e.message); }
-    });
+    }
 
     // Status de conexão (também verificado se não tem mensagem)
     if (tipo.includes('connection') || pathEvento.includes('connection')) {
