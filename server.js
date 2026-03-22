@@ -481,10 +481,13 @@ app.post('/configurar-webhook', async (req, res) => {
   try {
     const url = req.body?.url || `${MY_URL}/webhook`;
     const r = await evo.post(`/webhook/set/${INSTANCE}`, {
-      url,
-      webhook_by_events: false,
-      webhook_base64:    false,
-      events: ['MESSAGES_UPSERT','MESSAGES_UPDATE','CONNECTION_UPDATE','SEND_MESSAGE']
+      webhook: {
+        url,
+        webhook_by_events: false,
+        webhook_base64:    false,
+        enabled: true,
+        events: ['MESSAGES_UPSERT','MESSAGES_UPDATE','CONNECTION_UPDATE','SEND_MESSAGE']
+      }
     });
     console.log('✅ Webhook configurado:', url);
     res.json({ sucesso: true, url, dados: r.data });
@@ -513,10 +516,13 @@ server.listen(PORT, async () => {
     if (!MY_URL) { console.log('⚠️  MY_URL não configurado — webhook manual necessário'); return; }
     try {
       await evo.post(`/webhook/set/${INSTANCE}`, {
-        url: `${MY_URL}/webhook`,
-        webhook_by_events: false,
-        webhook_base64:    false,
-        events: ['MESSAGES_UPSERT','MESSAGES_UPDATE','CONNECTION_UPDATE','SEND_MESSAGE']
+        webhook: {
+          url: `${MY_URL}/webhook`,
+          webhook_by_events: false,
+          webhook_base64:    false,
+          enabled: true,
+          events: ['MESSAGES_UPSERT','MESSAGES_UPDATE','CONNECTION_UPDATE','SEND_MESSAGE']
+        }
       });
       console.log(`✅ Webhook auto-configurado: ${MY_URL}/webhook`);
     } catch(e) {
