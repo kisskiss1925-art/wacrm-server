@@ -414,6 +414,24 @@ async function salvarMensagem(payload) {
   }
 }
 
+// Busca base64 da mídia de forma assíncrona e emite atualização
+async function fetchMediaBase64(m, midia, payload) {
+  try {
+    const mediaResp = await evo.post(`/chat/getBase64FromMediaMessage/${INSTANCE}`, {
+      message: { key: m.key, message: m.message }
+    });
+    if (mediaResp.data?.base64) {
+      payload.mediaUrl   = `data:${midia.mime};base64,${mediaResp.data.base64}`;
+      payload.mediaType  = midia.type;
+      // Atualiza no banco e re-emite
+      await salvarMensagem(payload);
+      io.emit('nova_mensagem', payload);
+    }
+  } catch(e) {
+    console.log('Mídia base64 erro:', e.message);
+  }
+}
+
 // Aceita /webhook e /webhook/nome-do-evento (Webhook por Eventos ativado)
 app.post('/webhook', handleWebhook);
 app.post('/webhook/:evento', handleWebhook);
@@ -489,19 +507,9 @@ function handleWebhook(req, res) {
           mediaMime: midia?.mime  || null,
         };
 
-        // Busca base64 da mídia via Evolution API
+        // Busca base64 da mídia de forma assíncrona (não bloqueia o webhook)
         if (midia) {
-          try {
-            const mediaResp = await evo.post(`/chat/getBase64FromMediaMessage/${INSTANCE}`, {
-              message: { key: m.key, message: m.message }
-            });
-            if (mediaResp.data?.base64) {
-              payload.mediaBase64 = mediaResp.data.base64;
-              payload.mediaUrl    = `data:${midia.mime};base64,${mediaResp.data.base64}`;
-            }
-          } catch(e) {
-            console.log('Mídia base64 erro:', e.message);
-          }
+          fetchMediaBase64(m, midia, payload).catch(()=>{});
         }
 
         const dir = payload.de === 'in' ? '⬇️ RECEBIDA' : '⬆️ ENVIADA';
