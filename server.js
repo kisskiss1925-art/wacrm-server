@@ -423,25 +423,33 @@ app.post('/webhook', (req, res) => {
 
     lista.forEach(m => {
       try {
-        const jid    = m.key?.remoteJidAlt || m.key?.remoteJid || m.remoteJidAlt || m.remoteJid || '';
-        const jidReal = jid.endsWith('@s.whatsapp.net') ? jid : (m.key?.remoteJidAlt || '');
-        // Aceita @s.whatsapp.net e @lid (Evolution API v2)
-        if (!jid.endsWith('@s.whatsapp.net') && !jid.endsWith('@lid')) return;
-        if (jid.endsWith('@g.us')) return; // ignora grupos
+        // Evolution API v2: usa @lid internamente mas remoteJidAlt tem o número real
+        const jidLid  = m.key?.remoteJid  || m.remoteJid  || '';
+        const jidAlt  = m.key?.remoteJidAlt || m.remoteJidAlt || '';
+        // jidReal = prefere @s.whatsapp.net, fallback para @lid
+        const jidReal = jidAlt.endsWith('@s.whatsapp.net') ? jidAlt
+                      : jidLid.endsWith('@s.whatsapp.net') ? jidLid
+                      : jidAlt || jidLid;
+
+        // Ignora grupos e status
+        if (jidLid.endsWith('@g.us') || jidAlt.endsWith('@g.us')) return;
+        if (jidLid.includes('status@broadcast')) return;
+        // Só contatos pessoais: @s.whatsapp.net ou @lid
+        const isPersonal = jidReal.endsWith('@s.whatsapp.net') || jidLid.endsWith('@lid');
+        if (!isPersonal) return;
 
         const txt = extrairTexto(m.message || m);
         if (!txt) return;
 
-        // Usa o número real (remoteJidAlt tem o número quando addressingMode é lid)
-        const jidForNum = jidReal || jid;
-        const numero = jidForNum.replace('@s.whatsapp.net','').replace('@lid','');
+        const numero = jidReal.replace('@s.whatsapp.net','').replace('@lid','');
+        if (!numero || numero.length < 8) return;
         const ts     = m.messageTimestamp || Math.floor(Date.now()/1000);
         const d      = new Date(ts * 1000);
 
         const payload = {
           id:        m.key?.id || ('m'+Date.now()+Math.random()),
           numero,
-          waId:      jidReal || jid,
+          waId:      numero+'@s.whatsapp.net',
           texto:     txt,
           de:        m.key?.fromMe ? 'out' : 'in',
           nome:      m.pushName || m.verifiedName || m.notifyName || numero,
