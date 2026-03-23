@@ -40,6 +40,7 @@ async function initDB() {
         color       TEXT DEFAULT '#25d366',
         agent_id    TEXT,
         pinned      BOOLEAN DEFAULT false,
+        archived    BOOLEAN DEFAULT false,
         unread      INT DEFAULT 0,
         tags        JSONB DEFAULT '[]',
         notes       JSONB DEFAULT '[]',
@@ -49,6 +50,8 @@ async function initDB() {
         created_at  TIMESTAMPTZ DEFAULT NOW(),
         updated_at  TIMESTAMPTZ DEFAULT NOW()
       );
+      -- Adiciona coluna archived se não existir (migration)
+      ALTER TABLE conversations ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT false;
 
       CREATE TABLE IF NOT EXISTS messages (
         id          TEXT PRIMARY KEY,
@@ -736,6 +739,39 @@ app.post('/media/base64', async (req, res) => {
     }
   } catch(e) {
     console.error('Erro media/base64:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════
+// LIMPEZA — remove conversas inválidas do banco
+// ══════════════════════════════════════════════
+app.post('/db/limpar', async (req, res) => {
+  if (!pool) return res.json({ ok: true });
+  try {
+    const { myPhone, deleteArchived } = req.body;
+    let deleted = 0;
+
+    // Remove meu próprio número
+    if (myPhone) {
+      const phone = myPhone.replace(/\D/g,'');
+      const last10 = phone.slice(-10);
+      const r = await pool.query(
+        "DELETE FROM conversations WHERE RIGHT(REPLACE(REPLACE(phone,'+',''),'-',''), 10) = $1",
+        [last10]
+      );
+      deleted += r.rowCount;
+    }
+
+    // Remove conversas arquivadas
+    if (deleteArchived) {
+      const r = await pool.query("DELETE FROM conversations WHERE archived = true");
+      deleted += r.rowCount;
+    }
+
+    console.log(`🧹 Limpeza: ${deleted} conversas removidas`);
+    res.json({ ok: true, deleted });
+  } catch(e) {
     res.status(500).json({ erro: e.message });
   }
 });
