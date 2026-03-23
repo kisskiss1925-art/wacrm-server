@@ -149,6 +149,24 @@ const evo = axios.create({
 // ══════════════════════════════════════════════
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+// Debug: conta mensagens no banco
+app.get('/debug/msgs', async (req, res) => {
+  if (!pool) return res.json({ erro: 'sem banco' });
+  try {
+    const { rows } = await pool.query(`
+      SELECT c.id, c.name, c.phone,
+        COUNT(m.id) as total,
+        SUM(CASE WHEN m.from_me = false THEN 1 ELSE 0 END) as recebidas,
+        SUM(CASE WHEN m.from_me = true THEN 1 ELSE 0 END) as enviadas
+      FROM conversations c
+      LEFT JOIN messages m ON m.conv_id = c.id
+      GROUP BY c.id, c.name, c.phone
+      ORDER BY total DESC
+    `);
+    res.json(rows);
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
 app.get('/', async (req, res) => {
   const dbOk = pool ? await pool.query('SELECT 1').then(()=>true).catch(()=>false) : false;
   res.json({
