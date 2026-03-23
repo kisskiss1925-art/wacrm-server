@@ -196,6 +196,7 @@ app.get('/db/conversas', async (req, res) => {
       color:    c.color,
       agentId:  c.agent_id,
       pinned:   c.pinned,
+      archived: c.archived || false,
       unread:   c.unread,
       tags:     c.tags,
       notes:    c.notes,
@@ -213,16 +214,16 @@ app.post('/db/conversas', async (req, res) => {
     const c = req.body;
     await pool.query(`
       INSERT INTO conversations
-        (id,phone,name,company,stage,color,agent_id,pinned,unread,tags,notes,products,wa_id,last_ts,updated_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+        (id,phone,name,company,stage,color,agent_id,pinned,archived,unread,tags,notes,products,wa_id,last_ts,updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
       ON CONFLICT(id) DO UPDATE SET
         name=EXCLUDED.name, stage=EXCLUDED.stage, color=EXCLUDED.color,
-        agent_id=EXCLUDED.agent_id, pinned=EXCLUDED.pinned, unread=EXCLUDED.unread,
-        tags=EXCLUDED.tags, notes=EXCLUDED.notes, products=EXCLUDED.products,
-        last_ts=EXCLUDED.last_ts, updated_at=NOW()
+        agent_id=EXCLUDED.agent_id, pinned=EXCLUDED.pinned, archived=EXCLUDED.archived,
+        unread=EXCLUDED.unread, tags=EXCLUDED.tags, notes=EXCLUDED.notes,
+        products=EXCLUDED.products, last_ts=EXCLUDED.last_ts, updated_at=NOW()
     `, [
       c.id, c.phone, c.name, c.company||'', c.stage||'lead', c.color||'#25d366',
-      c.agentId||null, c.pinned||false, c.unread||0,
+      c.agentId||null, c.pinned||false, c.archived||false, c.unread||0,
       JSON.stringify(c.tags||[]), JSON.stringify(c.notes||[]),
       JSON.stringify(c.products||[]), c.waId||null, c.lastTs||0
     ]);
