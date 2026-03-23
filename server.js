@@ -710,6 +710,32 @@ app.delete('/auth/agentes/:id', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════
+// MEDIA BASE64 — busca mídia sob demanda
+// ══════════════════════════════════════════════
+app.post('/media/base64', async (req, res) => {
+  try {
+    const { key, message } = req.body;
+    console.log('🎵 Buscando mídia base64 para:', key?.id);
+    const r = await evo.post(`/chat/getBase64FromMediaMessage/${INSTANCE}`, {
+      message: { key, message }
+    });
+    console.log('Resposta mídia:', r.data ? 'OK' : 'vazio');
+    if (r.data?.base64) {
+      res.json({ base64: r.data.base64, mime: r.data.mimetype || 'audio/ogg' });
+    } else if (r.data?.mediaUrl) {
+      // Alguns formatos retornam mediaUrl em vez de base64
+      res.json({ mediaUrl: r.data.mediaUrl, mime: r.data.mimetype || 'audio/ogg' });
+    } else {
+      console.log('Resposta completa:', JSON.stringify(r.data).slice(0,200));
+      res.status(404).json({ erro: 'Mídia não encontrada na resposta' });
+    }
+  } catch(e) {
+    console.error('Erro media/base64:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════
 // CONFIGURAÇÕES GLOBAIS — tags, planos, chatbot
 // ══════════════════════════════════════════════
 async function initConfig() {
