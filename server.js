@@ -417,18 +417,25 @@ async function salvarMensagem(payload) {
 // Busca base64 da mídia de forma assíncrona e emite atualização
 async function fetchMediaBase64(m, midia, payload) {
   try {
+    console.log(`🖼️  Buscando mídia ${midia.type} para ${payload.numero}...`);
     const mediaResp = await evo.post(`/chat/getBase64FromMediaMessage/${INSTANCE}`, {
       message: { key: m.key, message: m.message }
     });
     if (mediaResp.data?.base64) {
-      payload.mediaUrl   = `data:${midia.mime};base64,${mediaResp.data.base64}`;
+      const dataUrl = `data:${midia.mime};base64,${mediaResp.data.base64}`;
+      payload.mediaUrl   = dataUrl;
       payload.mediaType  = midia.type;
-      // Atualiza no banco e re-emite
+      console.log(`✅ Mídia ${midia.type} obtida (${Math.round(dataUrl.length/1024)}KB)`);
+      // Salva no banco com a mídia
       await salvarMensagem(payload);
+      // Re-emite para o CRM com a mídia incluída
       io.emit('nova_mensagem', payload);
+      console.log(`📡 Mídia re-emitida para ${io.engine.clientsCount} cliente(s)`);
+    } else {
+      console.log('⚠️  Mídia sem base64 na resposta');
     }
   } catch(e) {
-    console.log('Mídia base64 erro:', e.message);
+    console.log('❌ Mídia base64 erro:', e.message);
   }
 }
 
