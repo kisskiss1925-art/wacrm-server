@@ -277,7 +277,9 @@ app.post('/db/mensagens', async (req, res) => {
         INSERT INTO messages(id,conv_id,text,from_me,msg_time,msg_date,status,media_url,media_type,is_bot,timestamp)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
         ON CONFLICT(id) DO UPDATE SET
-          status=EXCLUDED.status, text=EXCLUDED.text
+          status=EXCLUDED.status, text=EXCLUDED.text,
+          from_me=EXCLUDED.from_me, media_url=COALESCE(EXCLUDED.media_url, messages.media_url),
+          media_type=COALESCE(EXCLUDED.media_type, messages.media_type)
       `, [
         m.id, convId, m.text||'', m.from==='out',
         m.time||'', m.date||'', m.status||'sent',
@@ -791,6 +793,94 @@ app.post('/db/limpar', async (req, res) => {
     console.log(`🧹 Limpeza: ${deleted} conversas removidas`);
     res.json({ ok: true, deleted });
   } catch(e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════
+// SYNC HISTÓRICO COMPLETO DA CONVERSA
+// ══════════════════════════════════════════════
+app.post('/sync/historico', async (req, res) => {
+  if (!pool) return res.json({ ok: false, erro: 'sem banco' });
+  try {
+    const { remoteJid, convId, nome, phone } = req.body;
+    if (!remoteJid) return res.status(400).json({ erro: 'remoteJid obrigatório' });
+
+    console.log(`🔄 Sincronizando histórico de ${nome||remoteJid}...`);
+
+    // Busca todas as mensagens da conversa na Evolution API
+    const r = await evo.post(`/chat/findMessages/${INSTANCE}`, {
+      where: { key: { remoteJid } },
+      limit: 200
+    });
+
+    const records = r.data?.messages?.records || r.data?.records || [];
+    console.log(`📨 ${records.length} mensagens encontradas`);
+
+    if (!records.length) return res.json({ ok: true, salvos: 0 });
+
+    // Garante que conversa existe no banco
+    await pool.query(`
+      INSERT INTO conversations(id,phone,name,wa_id,last_ts,updated_at)
+      VALUES($1,$2,$3,$4,$5,NOW())
+      ON CONFLICT(id) DO UPDATE SET
+        name=CASE WHEN conversations.name='' THEN EXCLUDED.name ELSE conversations.name END,
+        wa_id=EXCLUDED.wa_id, last_ts=EXCLUDED.last_ts, updated_at=NOW()
+    `, [convId, phone, nome||phone, remoteJid, Date.now()]);
+
+    let salvos = 0;
+    for (const m of records) {
+      try {
+        // Extrai texto
+        const msg = m.message || {};
+        const texto = msg.conversation
+          || msg.extendedTextMessage?.text
+          || msg.imageMessage?.caption
+          || (msg.imageMessage    ? '📷 Imagem'    : '')
+          || (msg.audioMessage    ? '🎵 Áudio'     : '')
+          || (msg.videoMessage    ? '🎬 Vídeo'     : '')
+          || (msg.documentMessage ? '📄 Documento' : '')
+          || (msg.stickerMessage  ? '🖼️ Sticker'  : '')
+          || '';
+
+        if (!texto && !msg.imageMessage && !msg.audioMessage && !msg.videoMessage) continue;
+
+        const ts   = m.messageTimestamp || 0;
+        const d    = new Date(ts * 1000);
+        const time = d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+        const fromMe = m.key?.fromMe || false;
+
+        // Detecta tipo de mídia
+        let mediaType = null;
+        if (msg.imageMessage)    mediaType = 'image';
+        else if (msg.audioMessage) mediaType = 'audio';
+        else if (msg.videoMessage) mediaType = 'video';
+        else if (msg.documentMessage) mediaType = 'document';
+
+        await pool.query(`
+          INSERT INTO messages(id,conv_id,text,from_me,msg_time,msg_date,status,media_type,timestamp)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+          ON CONFLICT(id) DO NOTHING
+        `, [
+          m.key?.id || ('h'+Date.now()+Math.random()),
+          convId, texto, fromMe, time, 'Histórico',
+          'read', mediaType, ts
+        ]);
+        salvos++;
+      } catch(e) {}
+    }
+
+    // Atualiza last_ts
+    const maxTs = Math.max(...records.map(m=>m.messageTimestamp||0));
+    if (maxTs > 0) {
+      await pool.query('UPDATE conversations SET last_ts=$1,updated_at=NOW() WHERE id=$2',
+        [maxTs, convId]);
+    }
+
+    console.log(`✅ ${salvos} mensagens salvas para ${nome}`);
+    res.json({ ok: true, salvos, total: records.length });
+  } catch(e) {
+    console.error('Erro sync histórico:', e.message);
     res.status(500).json({ erro: e.message });
   }
 });
