@@ -522,12 +522,17 @@ function handleWebhook(req, res) {
         const dir = payload.de === 'in' ? '⬇️ RECEBIDA' : '⬆️ ENVIADA';
         console.log(`${dir} | ${payload.nome} (${payload.numero}) | ${payload.texto.slice(0,60)}`);
 
-        // Emite via Socket.IO para o CRM
-        io.emit('nova_mensagem', payload);
-        console.log(`📡 Emitido para ${io.engine.clientsCount} cliente(s)`);
-
-        // Salva no banco de dados
+        // Salva no banco de dados (sempre)
         salvarMensagem(payload);
+
+        // Emite via Socket.IO APENAS mensagens RECEBIDAS (in)
+        // Mensagens enviadas (out) já foram adicionadas localmente pelo CRM
+        if (payload.de === 'in') {
+          io.emit('nova_mensagem', payload);
+          console.log(`📡 Emitido para ${io.engine.clientsCount} cliente(s)`);
+        } else {
+          console.log(`💾 Salvo no banco (não emitido — enviado por nós)`);
+        }
 
       } catch(e) { console.error('Erro processar msg:', e.message); }
     }
