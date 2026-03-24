@@ -279,7 +279,13 @@ app.post('/db/conversas', async (req, res) => {
   if (!pool) return res.json({ ok: true });
   try {
     const c = req.body;
-    if (!c?.id) return res.status(400).json({ ok:false, erro:'id obrigatório' });
+    if (!c?.id) return res.json({ ok: true, skipped: true });
+
+    const { rows: beforeRows } = await pool.query(
+      'SELECT COALESCE(last_ts,0) AS last_ts FROM conversations WHERE id=$1',
+      [c.id]
+    );
+    const beforeLastTs = Number(beforeRows?.[0]?.last_ts || 0);
 
     await pool.query(`
       INSERT INTO conversations
@@ -301,7 +307,13 @@ app.post('/db/conversas', async (req, res) => {
 
     if (Array.isArray(c.messages) && c.messages.length) {
       let maxTs = 0;
-      for (const m of c.messages) {
+      // Salva somente mensagens recentes/novas para não sobrecarregar em autosave.
+      const toPersist = c.messages
+        .filter(m => normalizeTs(m?.timestamp) >= Math.max(0, beforeLastTs - 5))
+        .sort((a,b) => normalizeTs(a?.timestamp) - normalizeTs(b?.timestamp))
+        .slice(-120);
+
+      for (const m of toPersist) {
         const r = await upsertMessage(c.id, m);
         if (r.timestamp > maxTs) maxTs = r.timestamp;
       }
