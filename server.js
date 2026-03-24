@@ -178,54 +178,6 @@ app.get('/', async (req, res) => {
   });
 });
 
-function normalizeTs(value) {
-  const n = Number(value || 0);
-  if (!n) return Math.floor(Date.now() / 1000);
-  return n > 9999999999 ? Math.floor(n / 1000) : Math.floor(n);
-}
-
-function tsToTimeDate(ts) {
-  const d = new Date(normalizeTs(ts) * 1000);
-  return {
-    time: d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-    date: d.toLocaleDateString('pt-BR')
-  };
-}
-
-async function upsertMessage(convId, m) {
-  const ts = normalizeTs(m.timestamp);
-  const td = tsToTimeDate(ts);
-  const msgId = m.id || ('m' + Date.now() + Math.random().toString(16).slice(2, 6));
-  const result = await pool.query(`
-    INSERT INTO messages(id,conv_id,text,from_me,msg_time,msg_date,status,media_url,media_type,is_bot,timestamp)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-    ON CONFLICT(id) DO UPDATE SET
-      text      = COALESCE(NULLIF(EXCLUDED.text,''), messages.text),
-      from_me   = EXCLUDED.from_me,
-      msg_time  = COALESCE(NULLIF(EXCLUDED.msg_time,''), messages.msg_time),
-      msg_date  = COALESCE(NULLIF(EXCLUDED.msg_date,''), messages.msg_date),
-      status    = COALESCE(NULLIF(EXCLUDED.status,''), messages.status),
-      media_url = COALESCE(EXCLUDED.media_url, messages.media_url),
-      media_type= COALESCE(EXCLUDED.media_type, messages.media_type),
-      is_bot    = COALESCE(EXCLUDED.is_bot, messages.is_bot),
-      timestamp = GREATEST(EXCLUDED.timestamp, messages.timestamp)
-    RETURNING (xmax = 0) AS inserted
-  `, [
-    msgId,
-    convId,
-    m.text || '',
-    (m.from === 'out') || !!m.fromMe,
-    m.time || td.time,
-    m.date || td.date,
-    m.status || 'sent',
-    m.mediaUrl || null,
-    m.mediaType || null,
-    !!m.isBot,
-    ts
-  ]);
-  return { inserted: !!result.rows?.[0]?.inserted, timestamp: ts, id: msgId };
-}
-
 // ══════════════════════════════════════════════
 // DB ROUTES — Conversas
 // ══════════════════════════════════════════════
@@ -249,7 +201,6 @@ app.get('/db/conversas', async (req, res) => {
         date:     m.msg_date,
         status:   m.status,
         mediaUrl: m.media_url,
-        mediaType:m.media_type,
         isBot:    m.is_bot,
         timestamp:m.timestamp
       });
@@ -279,52 +230,21 @@ app.post('/db/conversas', async (req, res) => {
   if (!pool) return res.json({ ok: true });
   try {
     const c = req.body;
-    if (!c?.id) return res.json({ ok: true, skipped: true });
-
-    const { rows: beforeRows } = await pool.query(
-      'SELECT COALESCE(last_ts,0) AS last_ts FROM conversations WHERE id=$1',
-      [c.id]
-    );
-    const beforeLastTs = Number(beforeRows?.[0]?.last_ts || 0);
-
     await pool.query(`
       INSERT INTO conversations
         (id,phone,name,company,stage,color,agent_id,pinned,archived,unread,tags,notes,products,wa_id,last_ts,updated_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
       ON CONFLICT(id) DO UPDATE SET
-        phone=COALESCE(EXCLUDED.phone, conversations.phone),
         name=EXCLUDED.name, stage=EXCLUDED.stage, color=EXCLUDED.color,
         agent_id=EXCLUDED.agent_id, pinned=EXCLUDED.pinned, archived=EXCLUDED.archived,
         unread=EXCLUDED.unread, tags=EXCLUDED.tags, notes=EXCLUDED.notes,
-        products=EXCLUDED.products, wa_id=COALESCE(EXCLUDED.wa_id, conversations.wa_id),
-        last_ts=GREATEST(EXCLUDED.last_ts, conversations.last_ts), updated_at=NOW()
+        products=EXCLUDED.products, last_ts=EXCLUDED.last_ts, updated_at=NOW()
     `, [
       c.id, c.phone, c.name, c.company||'', c.stage||'lead', c.color||'#25d366',
       c.agentId||null, c.pinned||false, c.archived||false, c.unread||0,
       JSON.stringify(c.tags||[]), JSON.stringify(c.notes||[]),
       JSON.stringify(c.products||[]), c.waId||null, c.lastTs||0
     ]);
-
-    if (Array.isArray(c.messages) && c.messages.length) {
-      let maxTs = 0;
-      // Salva somente mensagens recentes/novas para não sobrecarregar em autosave.
-      const toPersist = c.messages
-        .filter(m => normalizeTs(m?.timestamp) >= Math.max(0, beforeLastTs - 5))
-        .sort((a,b) => normalizeTs(a?.timestamp) - normalizeTs(b?.timestamp))
-        .slice(-120);
-
-      for (const m of toPersist) {
-        const r = await upsertMessage(c.id, m);
-        if (r.timestamp > maxTs) maxTs = r.timestamp;
-      }
-      if (maxTs > 0) {
-        await pool.query(
-          'UPDATE conversations SET last_ts=GREATEST(last_ts,$1), updated_at=NOW() WHERE id=$2',
-          [maxTs, c.id]
-        );
-      }
-    }
-
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ erro: e.message }); }
 });
@@ -352,7 +272,21 @@ app.post('/db/mensagens', async (req, res) => {
       [convId, convId.replace('wa_','+')]
     );
 
-    for (const m of messages) await upsertMessage(convId, m);
+    for (const m of messages) {
+      await pool.query(`
+        INSERT INTO messages(id,conv_id,text,from_me,msg_time,msg_date,status,media_url,media_type,is_bot,timestamp)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT(id) DO UPDATE SET
+          status=EXCLUDED.status, text=EXCLUDED.text,
+          from_me=EXCLUDED.from_me, media_url=COALESCE(EXCLUDED.media_url, messages.media_url),
+          media_type=COALESCE(EXCLUDED.media_type, messages.media_type)
+      `, [
+        m.id, convId, m.text||'', m.from==='out',
+        m.time||'', m.date||'', m.status||'sent',
+        m.mediaUrl||null, m.mediaType||null,
+        m.isBot||false, m.timestamp||0
+      ]);
+    }
     // Atualiza last_ts da conversa
     if (messages.length) {
       const lastTs = Math.max(...messages.map(m=>m.timestamp||0));
@@ -440,25 +374,6 @@ app.post('/enviar-midia', async (req, res) => {
     const r = await evo.post(`/message/sendMedia/${INSTANCE}`, {
       number: numero.replace(/\D/g,''), media, mediatype: mediatype||'image', caption: caption||''
     });
-
-    // Salva no banco para não sumir após refresh
-    if (pool && r.data?.key) {
-      const num  = numero.replace(/\D/g,'');
-      const cid  = 'wa_'+num;
-      await pool.query(
-        'INSERT INTO conversations(id,phone) VALUES($1,$2) ON CONFLICT DO NOTHING',
-        [cid, '+'+num]
-      ).catch(()=>{});
-      await upsertMessage(cid, {
-        id: r.data.key.id || ('m'+Date.now()),
-        text: caption || (mediatype === 'audio' ? '🎵 Áudio' : '📷 Imagem'),
-        from: 'out',
-        status: 'sent',
-        mediaType: mediatype || 'image',
-        timestamp: Math.floor(Date.now()/1000)
-      }).catch(()=>{});
-    }
-
     res.json({ sucesso: true, dados: r.data });
   } catch(e) { res.status(500).json({ sucesso: false, erro: e.message }); }
 });
@@ -507,20 +422,15 @@ async function salvarMensagem(payload) {
         wa_id=EXCLUDED.wa_id, last_ts=EXCLUDED.last_ts, updated_at=NOW()
     `, [cid, '+'+payload.numero, payload.nome||'+'+payload.numero, payload.waId, payload.timestamp]);
 
-    const msgRes = await upsertMessage(cid, {
-      id: payload.id,
-      text: payload.texto,
-      from: payload.de,
-      time: payload.horario,
-      date: 'Hoje',
-      status: 'sent',
-      mediaUrl: payload.mediaUrl || null,
-      mediaType: payload.mediaType || null,
-      timestamp: payload.timestamp || 0
-    });
+    // Insert mensagem
+    await pool.query(`
+      INSERT INTO messages(id,conv_id,text,from_me,msg_time,msg_date,status,media_url,media_type,timestamp)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING
+    `, [payload.id, cid, payload.texto, payload.de==='out', payload.horario, 'Hoje', 'sent',
+        payload.mediaUrl||null, payload.mediaType||null, payload.timestamp]);
 
-    // Incrementa unread apenas quando a mensagem entra pela primeira vez
-    if (payload.de === 'in' && msgRes.inserted) {
+    // Incrementa unread se recebida
+    if (payload.de === 'in') {
       await pool.query('UPDATE conversations SET unread=unread+1 WHERE id=$1', [cid]);
     }
   } catch(e) {
@@ -899,10 +809,20 @@ app.post('/sync/historico', async (req, res) => {
     console.log(`🔄 Sincronizando histórico de ${nome||remoteJid}...`);
 
     // Busca todas as mensagens da conversa na Evolution API
-    const r = await evo.post(`/chat/findMessages/${INSTANCE}`, {
+    // Tenta buscar mensagens com remoteJid principal e com alt (@lid)
+    let r = await evo.post(`/chat/findMessages/${INSTANCE}`, {
       where: { key: { remoteJid } },
       limit: 200
     });
+    
+    // Se não encontrou, tenta com remoteJidAlt
+    if ((!r.data?.messages?.records?.length) && req.body.remoteJidAlt && req.body.remoteJidAlt !== remoteJid) {
+      console.log(`Tentando com remoteJidAlt: ${req.body.remoteJidAlt}`);
+      r = await evo.post(`/chat/findMessages/${INSTANCE}`, {
+        where: { key: { remoteJid: req.body.remoteJidAlt } },
+        limit: 200
+      });
+    }
 
     const records = r.data?.messages?.records || r.data?.records || [];
     console.log(`📨 ${records.length} mensagens encontradas`);
@@ -914,7 +834,8 @@ app.post('/sync/historico', async (req, res) => {
       INSERT INTO conversations(id,phone,name,wa_id,last_ts,updated_at)
       VALUES($1,$2,$3,$4,$5,NOW())
       ON CONFLICT(id) DO UPDATE SET
-        name=CASE WHEN conversations.name='' THEN EXCLUDED.name ELSE conversations.name END,
+        name=CASE WHEN conversations.name IS NULL OR conversations.name='' OR conversations.name='Você' 
+             THEN EXCLUDED.name ELSE conversations.name END,
         wa_id=EXCLUDED.wa_id, last_ts=EXCLUDED.last_ts, updated_at=NOW()
     `, [convId, phone, nome||phone, remoteJid, Date.now()]);
 
@@ -947,19 +868,16 @@ app.post('/sync/historico', async (req, res) => {
         else if (msg.videoMessage) mediaType = 'video';
         else if (msg.documentMessage) mediaType = 'document';
 
-        const mediaUrl = msg.imageMessage?.url || msg.audioMessage?.url || msg.videoMessage?.url || msg.documentMessage?.url || null;
-        const up = await upsertMessage(convId, {
-          id: m.key?.id || ('h'+Date.now()+Math.random()),
-          text: texto,
-          from: fromMe ? 'out' : 'in',
-          time,
-          date: d.toLocaleDateString('pt-BR'),
-          status: 'read',
-          mediaUrl,
-          mediaType,
-          timestamp: ts
-        });
-        if (up.inserted) salvos++;
+        await pool.query(`
+          INSERT INTO messages(id,conv_id,text,from_me,msg_time,msg_date,status,media_type,timestamp)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+          ON CONFLICT(id) DO NOTHING
+        `, [
+          m.key?.id || ('h'+Date.now()+Math.random()),
+          convId, texto, fromMe, time, 'Histórico',
+          'read', mediaType, ts
+        ]);
+        salvos++;
       } catch(e) {}
     }
 
