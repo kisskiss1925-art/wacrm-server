@@ -814,7 +814,7 @@ app.post('/sync/historico', async (req, res) => {
       where: { key: { remoteJid } },
       limit: 200
     });
-    
+
     // Se não encontrou, tenta com remoteJidAlt
     if ((!r.data?.messages?.records?.length) && req.body.remoteJidAlt && req.body.remoteJidAlt !== remoteJid) {
       console.log(`Tentando com remoteJidAlt: ${req.body.remoteJidAlt}`);
